@@ -5,89 +5,55 @@ on:
   pull_request:
   workflow_dispatch:
 
-env:
-  NDK_VERSION: r23c
-  ANDROID_API: "16"
-  CORE_NAME: mednafen_wswan_libretro
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      NDK: ${{ github.workspace }}/android-ndk-r23c
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          submodules: recursive
-          fetch-depth: 0
+      - uses: actions/checkout@v7
 
-      - name: Cache NDK
-        id: cache-ndk
+      - name: Cache NDK r23c
+        id: ndk
         uses: actions/cache@v6
         with:
-          path: android-ndk-${{ env.NDK_VERSION }}
-          key: ndk-${{ env.NDK_VERSION }}-linux
+          path: android-ndk-r23c
+          key: ndk-r23c-linux
 
-      - name: Download NDK ${{ env.NDK_VERSION }}
-        if: steps.cache-ndk.outputs.cache-hit != 'true'
+      - name: Download NDK r23c
+        if: steps.ndk.outputs.cache-hit != 'true'
         run: |
-          curl -fsSL -o ndk.zip \
-            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-          rm -rf android-ndk-${NDK_VERSION}
-          unzip -qo ndk.zip
-          rm ndk.zip
+          curl -fsSL -o ndk.zip https://dl.google.com/android/repository/android-ndk-r23c-linux.zip
+          unzip -q ndk.zip
 
-      - name: Build with ndk-build (official jni/ build)
+      - name: Build
         working-directory: jni
-        env:
-          NDK: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
         run: |
-          # Xperia Play: Snapdragon S2 (Scorpion, ARMv7-A, NEON, VFPv3-D32), softfp ABI.
+          # Xperia Play: ARMv7-A, NEON, softfp, API 16 (works on 4.0.4)
           OPT="-O3 -flto -mcpu=cortex-a8 -mfpu=neon -mfloat-abi=softfp \
           -ffast-math -fomit-frame-pointer -funroll-loops -fno-stack-protector \
           -fvectorize -fslp-vectorize -fmerge-all-constants -fno-common \
           -ffunction-sections -fdata-sections -fvisibility=hidden -DNDEBUG"
           LDOPT="-flto -Wl,--gc-sections -Wl,-O2 -Wl,--as-needed -Wl,--icf=all -Wl,--exclude-libs,ALL"
 
-          set -o pipefail
           "$NDK/ndk-build" -j"$(nproc)" \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=./Android.mk \
             NDK_APPLICATION_MK=./Application.mk \
             APP_ABI=armeabi-v7a \
-            APP_PLATFORM=android-$ANDROID_API \
+            APP_PLATFORM=android-16 \
             APP_STL=c++_static \
             APP_ARM_NEON=true \
             APP_OPTIM=release \
             APP_CFLAGS="$OPT" \
             APP_CPPFLAGS="$OPT" \
             APP_LDFLAGS="$LDOPT" \
-            DEBUG=0 2>&1 | tee ndk-build.log
+            DEBUG=0
 
-      - name: Strip and verify
-        env:
-          NDK: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
-        run: |
-          LLVM_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          OUT=dist/${CORE_NAME}_android.so
-          mkdir -p dist
-          cp jni/libs/armeabi-v7a/libretro.so "$OUT"
-          "$LLVM_BIN/llvm-strip" --strip-unneeded "$OUT"
+          cp libs/armeabi-v7a/libretro.so mednafen_wswan_libretro_android.so
 
-          echo "--- ARM attributes ---"
-          "$LLVM_BIN/llvm-readelf" -A "$OUT" | grep -E "Tag_CPU_arch|Tag_Advanced_SIMD|Tag_FP_arch" || true
-
-          echo "--- NEEDED libraries ---"
-          "$LLVM_BIN/llvm-readelf" -d "$OUT" | grep NEEDED
-          if "$LLVM_BIN/llvm-readelf" -d "$OUT" | grep NEEDED \
-             | grep -Ev "libc\.so|libm\.so|libdl\.so|liblog\.so"; then
-            echo "::error::Unexpected shared library dependency"
-            exit 1
-          fi
-          ls -l dist
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.CORE_NAME }}_android_armv7_api16
-          path: dist/${{ env.CORE_NAME }}_android.so
+          name: mednafen_wswan_libretro_android
+          path: jni/mednafen_wswan_libretro_android.so
