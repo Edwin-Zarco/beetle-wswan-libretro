@@ -4,11 +4,6 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      lto:
-        description: "Enable LTO (riskier; try without first)"
-        type: boolean
-        default: false
 
 env:
   NDK_VERSION: r23c
@@ -31,7 +26,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: android-ndk-${{ env.NDK_VERSION }}
-          key: ndk-${{ env.NDK_VERSION }}-linux-x86_64
+          key: ndk-${{ env.NDK_VERSION }}-linux
 
       - name: Download NDK ${{ env.NDK_VERSION }}
         if: steps.cache-ndk.outputs.cache-hit != 'true'
@@ -45,16 +40,13 @@ jobs:
         working-directory: jni
         env:
           NDK: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
-          USE_LTO: ${{ github.event.inputs.lto || 'false' }}
         run: |
-          OPT="-O3 -mcpu=cortex-a8 -mfpu=neon -mfloat-abi=softfp \
+          # Xperia Play: Snapdragon S2 (Scorpion, ARMv7-A, NEON, VFPv3-D32), softfp ABI.
+          OPT="-O3 -flto -mcpu=cortex-a8 -mfpu=neon -mfloat-abi=softfp \
           -ffast-math -fomit-frame-pointer -funroll-loops -fno-stack-protector \
+          -fvectorize -fslp-vectorize -fmerge-all-constants -fno-common \
           -ffunction-sections -fdata-sections -fvisibility=hidden -DNDEBUG"
-          LDOPT="-Wl,--gc-sections -Wl,-O1 -Wl,--as-needed"
-          if [ "$USE_LTO" = "true" ]; then
-            OPT="$OPT -flto"
-            LDOPT="$LDOPT -flto"
-          fi
+          LDOPT="-flto -Wl,--gc-sections -Wl,-O2 -Wl,--as-needed -Wl,--icf=all -Wl,--exclude-libs,ALL"
 
           set -o pipefail
           "$NDK/ndk-build" -j"$(nproc)" \
@@ -76,21 +68,22 @@ jobs:
           NDK: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
         run: |
           LLVM_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          SO=jni/libs/armeabi-v7a/libretro.so
+          OUT=dist/${CORE_NAME}_android.so
           mkdir -p dist
-          cp "$SO" dist/${CORE_NAME}_android.so
-          "$LLVM_BIN/llvm-strip" --strip-unneeded dist/${CORE_NAME}_android.so
+          cp jni/libs/armeabi-v7a/libretro.so "$OUT"
+          "$LLVM_BIN/llvm-strip" --strip-unneeded "$OUT"
 
           echo "--- ARM attributes ---"
-          "$LLVM_BIN/llvm-readelf" -A dist/${CORE_NAME}_android.so | grep -E "Tag_CPU_arch|Tag_Advanced_SIMD|Tag_FP_arch" || true
+          "$LLVM_BIN/llvm-readelf" -A "$OUT" | grep -E "Tag_CPU_arch|Tag_Advanced_SIMD|Tag_FP_arch" || true
 
           echo "--- NEEDED libraries ---"
-          "$LLVM_BIN/llvm-readelf" -d dist/${CORE_NAME}_android.so | grep NEEDED
-          if "$LLVM_BIN/llvm-readelf" -d dist/${CORE_NAME}_android.so | grep NEEDED \
+          "$LLVM_BIN/llvm-readelf" -d "$OUT" | grep NEEDED
+          if "$LLVM_BIN/llvm-readelf" -d "$OUT" | grep NEEDED \
              | grep -Ev "libc\.so|libm\.so|libdl\.so|liblog\.so"; then
             echo "::error::Unexpected shared library dependency"
             exit 1
           fi
+          ls -l dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
