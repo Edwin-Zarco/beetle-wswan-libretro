@@ -1,0 +1,98 @@
+name: Build Beetle WSwan (Android armeabi-v7a, Xperia Play)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      lto:
+        description: "Enable LTO (riskier; try without first)"
+        type: boolean
+        default: false
+
+env:
+  NDK_VERSION: r23c
+  ANDROID_API: "16"
+  CORE_NAME: mednafen_wswan_libretro
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Cache NDK
+        id: cache-ndk
+        uses: actions/cache@v6
+        with:
+          path: android-ndk-${{ env.NDK_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}-linux-x86_64
+
+      - name: Download NDK ${{ env.NDK_VERSION }}
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o ndk.zip \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux-x86_64.zip"
+          unzip -q ndk.zip
+          rm ndk.zip
+
+      - name: Build with ndk-build (official jni/ build)
+        working-directory: jni
+        env:
+          NDK: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
+          USE_LTO: ${{ github.event.inputs.lto || 'false' }}
+        run: |
+          OPT="-O3 -mcpu=cortex-a8 -mfpu=neon -mfloat-abi=softfp \
+          -ffast-math -fomit-frame-pointer -funroll-loops -fno-stack-protector \
+          -ffunction-sections -fdata-sections -fvisibility=hidden -DNDEBUG"
+          LDOPT="-Wl,--gc-sections -Wl,-O1 -Wl,--as-needed"
+          if [ "$USE_LTO" = "true" ]; then
+            OPT="$OPT -flto"
+            LDOPT="$LDOPT -flto"
+          fi
+
+          "$NDK/ndk-build" -j"$(nproc)" 2>&1 | tee ndk-build.log \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=./Android.mk \
+            NDK_APPLICATION_MK=./Application.mk \
+            APP_ABI=armeabi-v7a \
+            APP_PLATFORM=android-$ANDROID_API \
+            APP_STL=c++_static \
+            APP_ARM_NEON=true \
+            APP_OPTIM=release \
+            APP_CFLAGS="$OPT" \
+            APP_CPPFLAGS="$OPT" \
+            APP_LDFLAGS="$LDOPT" \
+            DEBUG=0
+
+      - name: Strip and verify
+        env:
+          NDK: ${{ github.workspace }}/android-ndk-${{ env.NDK_VERSION }}
+        run: |
+          LLVM_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          SO=jni/libs/armeabi-v7a/libretro.so
+          mkdir -p dist
+          cp "$SO" dist/${CORE_NAME}_android.so
+          "$LLVM_BIN/llvm-strip" --strip-unneeded dist/${CORE_NAME}_android.so
+
+          echo "--- ARM attributes ---"
+          "$LLVM_BIN/llvm-readelf" -A dist/${CORE_NAME}_android.so | grep -E "Tag_CPU_arch|Tag_Advanced_SIMD|Tag_FP_arch" || true
+
+          echo "--- NEEDED libraries ---"
+          "$LLVM_BIN/llvm-readelf" -d dist/${CORE_NAME}_android.so | grep NEEDED
+          if "$LLVM_BIN/llvm-readelf" -d dist/${CORE_NAME}_android.so | grep NEEDED \
+             | grep -Ev "libc\.so|libm\.so|libdl\.so|liblog\.so"; then
+            echo "::error::Unexpected shared library dependency"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.CORE_NAME }}_android_armv7_api16
+          path: dist/${{ env.CORE_NAME }}_android.so
