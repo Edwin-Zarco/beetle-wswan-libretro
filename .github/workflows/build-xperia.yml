@@ -56,7 +56,8 @@ jobs:
             LDOPT="$LDOPT -flto"
           fi
 
-          "$NDK/ndk-build" -j"$(nproc)" 2>&1 | tee ndk-build.log \
+          set -o pipefail
+          "$NDK/ndk-build" -j"$(nproc)" \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=./Android.mk \
             NDK_APPLICATION_MK=./Application.mk \
@@ -68,7 +69,7 @@ jobs:
             APP_CFLAGS="$OPT" \
             APP_CPPFLAGS="$OPT" \
             APP_LDFLAGS="$LDOPT" \
-            DEBUG=0
+            DEBUG=0 2>&1 | tee ndk-build.log
 
       - name: Strip and verify
         env:
